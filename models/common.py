@@ -17,6 +17,8 @@ import pandas as pd
 import requests
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.modules.utils import _triple, _pair, _single
 import yaml
 from PIL import Image
 from torch.cuda import amp
@@ -206,22 +208,23 @@ class SPP(nn.Module):
             return self.cv2(torch.cat([x] + [m(x) for m in self.m], 1))
 
 
-class SPPF(nn.Module):
-    # Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher
-    def __init__(self, c1, c2, k=5):  # equivalent to SPP(k=(5, 9, 13))
-        super().__init__()
-        c_ = c1 // 2  # hidden channels
-        self.cv1 = Conv(c1, c_, 1, 1)
-        self.cv2 = Conv(c_ * 4, c2, 1, 1)
-        self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
+class SoftPool2d(nn.Module):
+    def __init__(self, kernel_size, stride, padding=0):
+        super(SoftPool2d, self).__init__()
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
 
     def forward(self, x):
-        x = self.cv1(x)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')  # suppress torch 1.9.0 max_pool2d() warning
-            y1 = self.m(x)
-            y2 = self.m(y1)
-            return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
+        x = self.soft_pool2d(x, kernel_size=self.kernel_size, stride=self.stride)
+        return x
+
+    def soft_pool2d(self, x, kernel_size=2, stride=None):
+        kernel_size = _pair(kernel_size)
+        stride = kernel_size if stride is None else _pair(stride)
+        e_x = torch.sum(torch.exp(x), dim=1, keepdim=True)
+        return F.avg_pool2d(x.mul(e_x), kernel_size, stride=stride, padding=self.padding).mul_(sum(kernel_size)).div_(
+            F.avg_pool2d(e_x, kernel_size, stride=stride, padding=self.padding).mul_(sum(kernel_size)))
 
 
 class Focus(nn.Module):
